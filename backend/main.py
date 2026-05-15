@@ -3,7 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from pypdf import PdfReader
 from pinecone import Pinecone
-from google import generativeai as genai
+from google import genai
 from groq import Groq
 from dotenv import load_dotenv
 
@@ -20,15 +20,14 @@ GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 if not GOOGLE_API_KEY or not PINECONE_API_KEY or not GROQ_API_KEY:
     raise ValueError("Missing API keys in environment variables")
 
-# ---------------- CONFIGURE CLIENTS ----------------
-genai.configure(api_key=GOOGLE_API_KEY)
-
+# ---------------- CLIENTS ----------------
+client = genai.Client(api_key=GOOGLE_API_KEY)
 groq_client = Groq(api_key=GROQ_API_KEY)
 
 pc = Pinecone(api_key=PINECONE_API_KEY)
 index = pc.Index("document-chatbot")
 
-# ---------------- FASTAPI APP ----------------
+# ---------------- FASTAPI ----------------
 app = FastAPI()
 
 app.add_middleware(
@@ -39,24 +38,24 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# ---------------- REQUEST MODEL ----------------
+# ---------------- MODEL ----------------
 class ChatRequest(BaseModel):
     question: str
 
-# ---------------- EMBEDDING ----------------
+# ---------------- EMBEDDING (FIXED) ----------------
 def get_embedding(text: str):
     try:
-        result = genai.embed_content(
+        result = client.models.embed_content(
             model="text-embedding-004",
-            content=text
+            contents=text
         )
-        return result["embedding"]
+        return result.embeddings[0].values
 
     except Exception as e:
         print("EMBEDDING ERROR:", e)
         return None
 
-# ---------------- SPLIT TEXT ----------------
+# ---------------- TEXT SPLIT ----------------
 def split_text(text, chunk_size=800, overlap=150):
     chunks = []
     start = 0
@@ -73,13 +72,12 @@ def split_text(text, chunk_size=800, overlap=150):
 def home():
     return {"message": "Backend Running"}
 
-# ---------------- UPLOAD PDF ----------------
+# ---------------- UPLOAD ----------------
 @app.post("/upload")
 async def upload_pdf(file: UploadFile = File(...)):
 
     try:
         os.makedirs("uploads", exist_ok=True)
-
         file_path = f"uploads/{file.filename}"
 
         with open(file_path, "wb") as f:
@@ -165,15 +163,11 @@ ANSWER:
 
         response = groq_client.chat.completions.create(
             model="llama-3.3-70b-versatile",
-            messages=[
-                {"role": "user", "content": prompt}
-            ],
+            messages=[{"role": "user", "content": prompt}],
             temperature=0.2
         )
 
-        answer = response.choices[0].message.content
-
-        return {"answer": answer}
+        return {"answer": response.choices[0].message.content}
 
     except Exception as e:
         print("CHAT ERROR:", e)
