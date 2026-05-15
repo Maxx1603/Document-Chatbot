@@ -29,6 +29,10 @@ GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
 PINECONE_API_KEY = os.getenv("PINECONE_API_KEY")
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 
+print("GOOGLE KEY:", GOOGLE_API_KEY)
+print("PINECONE KEY:", PINECONE_API_KEY)
+print("GROQ KEY:", GROQ_API_KEY)
+
 if not GOOGLE_API_KEY or not PINECONE_API_KEY or not GROQ_API_KEY:
     raise ValueError("Missing API keys in environment variables")
 
