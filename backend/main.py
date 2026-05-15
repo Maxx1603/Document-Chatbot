@@ -3,9 +3,9 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from pypdf import PdfReader
 from pinecone import Pinecone
+from google import generativeai as genai
 from groq import Groq
 from dotenv import load_dotenv
-import google.generativeai as genai
 
 import os
 import uuid
@@ -17,11 +17,10 @@ GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
 PINECONE_API_KEY = os.getenv("PINECONE_API_KEY")
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 
-# ---------------- VALIDATION ----------------
 if not GOOGLE_API_KEY or not PINECONE_API_KEY or not GROQ_API_KEY:
     raise ValueError("Missing API keys in environment variables")
 
-# ---------------- INIT CLIENTS ----------------
+# ---------------- CONFIGURE CLIENTS ----------------
 genai.configure(api_key=GOOGLE_API_KEY)
 
 groq_client = Groq(api_key=GROQ_API_KEY)
@@ -29,7 +28,7 @@ groq_client = Groq(api_key=GROQ_API_KEY)
 pc = Pinecone(api_key=PINECONE_API_KEY)
 index = pc.Index("document-chatbot")
 
-# ---------------- APP ----------------
+# ---------------- FASTAPI APP ----------------
 app = FastAPI()
 
 app.add_middleware(
@@ -44,11 +43,11 @@ app.add_middleware(
 class ChatRequest(BaseModel):
     question: str
 
-# ---------------- EMBEDDING FUNCTION ----------------
+# ---------------- EMBEDDING ----------------
 def get_embedding(text: str):
     try:
         result = genai.embed_content(
-            model="models/text-embedding-004",
+            model="text-embedding-004",
             content=text
         )
         return result["embedding"]
@@ -57,7 +56,7 @@ def get_embedding(text: str):
         print("EMBEDDING ERROR:", e)
         return None
 
-# ---------------- TEXT SPLIT ----------------
+# ---------------- SPLIT TEXT ----------------
 def split_text(text, chunk_size=800, overlap=150):
     chunks = []
     start = 0
@@ -69,7 +68,7 @@ def split_text(text, chunk_size=800, overlap=150):
 
     return chunks
 
-# ---------------- ROOT ----------------
+# ---------------- HOME ----------------
 @app.get("/")
 def home():
     return {"message": "Backend Running"}
@@ -77,8 +76,10 @@ def home():
 # ---------------- UPLOAD PDF ----------------
 @app.post("/upload")
 async def upload_pdf(file: UploadFile = File(...)):
+
     try:
         os.makedirs("uploads", exist_ok=True)
+
         file_path = f"uploads/{file.filename}"
 
         with open(file_path, "wb") as f:
@@ -103,11 +104,13 @@ async def upload_pdf(file: UploadFile = File(...)):
             embedding = get_embedding(chunk)
 
             if embedding:
-                vectors.append((
-                    str(uuid.uuid4()),
-                    embedding,
-                    {"text": chunk}
-                ))
+                vectors.append(
+                    (
+                        str(uuid.uuid4()),
+                        embedding,
+                        {"text": chunk}
+                    )
+                )
 
         if vectors:
             index.upsert(vectors=vectors)
@@ -124,6 +127,7 @@ async def upload_pdf(file: UploadFile = File(...)):
 # ---------------- CHAT ----------------
 @app.post("/chat")
 def chat(data: ChatRequest):
+
     try:
         query_embedding = get_embedding(data.question)
 
@@ -141,29 +145,14 @@ def chat(data: ChatRequest):
         if not matches:
             return {"answer": "No relevant data found."}
 
-        summary_keywords = ["summary", "summarize", "explain", "overview", "describe"]
-
-        is_summary_question = any(
-            k in data.question.lower() for k in summary_keywords
-        )
-
-        if not is_summary_question:
-            matches = [m for m in matches if m.get("score", 0) > 0.35]
-
-        if not matches:
-            return {"answer": "Answer not found in document."}
-
-        context = "\n\n".join(
+        context = "\n\n".join([
             m["metadata"]["text"] for m in matches
-        )
+        ])
 
         prompt = f"""
-You are an AI document assistant.
+You are an AI assistant.
 
-RULES:
-- Use ONLY context
-- Do not hallucinate
-- Be direct
+Use ONLY the context below.
 
 CONTEXT:
 {context}
@@ -176,13 +165,15 @@ ANSWER:
 
         response = groq_client.chat.completions.create(
             model="llama-3.3-70b-versatile",
-            messages=[{"role": "user", "content": prompt}],
+            messages=[
+                {"role": "user", "content": prompt}
+            ],
             temperature=0.2
         )
 
-        return {
-            "answer": response.choices[0].message.content
-        }
+        answer = response.choices[0].message.content
+
+        return {"answer": answer}
 
     except Exception as e:
         print("CHAT ERROR:", e)
