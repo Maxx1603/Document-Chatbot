@@ -3,15 +3,31 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from pypdf import PdfReader
 from pinecone import Pinecone
-import google.generativeai as genai
 from groq import Groq
 from dotenv import load_dotenv
+import google.generativeai as genai
 
 import os
 import uuid
 
 # ---------------- LOAD ENV ----------------
 load_dotenv()
+
+GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
+PINECONE_API_KEY = os.getenv("PINECONE_API_KEY")
+GROQ_API_KEY = os.getenv("GROQ_API_KEY")
+
+# ---------------- VALIDATION ----------------
+if not GOOGLE_API_KEY or not PINECONE_API_KEY or not GROQ_API_KEY:
+    raise ValueError("Missing API keys in environment variables")
+
+# ---------------- INIT CLIENTS ----------------
+genai.configure(api_key=GOOGLE_API_KEY)
+
+groq_client = Groq(api_key=GROQ_API_KEY)
+
+pc = Pinecone(api_key=PINECONE_API_KEY)
+index = pc.Index("document-chatbot")
 
 # ---------------- APP ----------------
 app = FastAPI()
@@ -24,37 +40,15 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# ---------------- API KEYS ----------------
-GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
-PINECONE_API_KEY = os.getenv("PINECONE_API_KEY")
-GROQ_API_KEY = os.getenv("GROQ_API_KEY")
-
-print("GOOGLE KEY:", GOOGLE_API_KEY)
-print("PINECONE KEY:", PINECONE_API_KEY)
-print("GROQ KEY:", GROQ_API_KEY)
-
-if not GOOGLE_API_KEY or not PINECONE_API_KEY or not GROQ_API_KEY:
-    raise ValueError("Missing API keys in environment variables")
-
-# ---------------- INIT GOOGLE ----------------
-genai.configure(api_key=GOOGLE_API_KEY)
-
-# ---------------- CLIENTS ----------------
-groq_client = Groq(api_key=GROQ_API_KEY)
-
-pc = Pinecone(api_key=PINECONE_API_KEY)
-index = pc.Index("document-chatbot")
-
 # ---------------- REQUEST MODEL ----------------
 class ChatRequest(BaseModel):
     question: str
 
-
-# ---------------- EMBEDDING ----------------
+# ---------------- EMBEDDING FUNCTION ----------------
 def get_embedding(text: str):
     try:
         result = genai.embed_content(
-            model="models/embedding-001",
+            model="models/text-embedding-004",
             content=text
         )
         return result["embedding"]
@@ -63,8 +57,7 @@ def get_embedding(text: str):
         print("EMBEDDING ERROR:", e)
         return None
 
-
-# ---------------- TEXT SPLITTING ----------------
+# ---------------- TEXT SPLIT ----------------
 def split_text(text, chunk_size=800, overlap=150):
     chunks = []
     start = 0
@@ -76,19 +69,16 @@ def split_text(text, chunk_size=800, overlap=150):
 
     return chunks
 
-
-# ---------------- HOME ----------------
+# ---------------- ROOT ----------------
 @app.get("/")
 def home():
     return {"message": "Backend Running"}
 
-
-# ---------------- PDF UPLOAD ----------------
+# ---------------- UPLOAD PDF ----------------
 @app.post("/upload")
 async def upload_pdf(file: UploadFile = File(...)):
     try:
         os.makedirs("uploads", exist_ok=True)
-
         file_path = f"uploads/{file.filename}"
 
         with open(file_path, "wb") as f:
@@ -113,13 +103,11 @@ async def upload_pdf(file: UploadFile = File(...)):
             embedding = get_embedding(chunk)
 
             if embedding:
-                vectors.append(
-                    (
-                        str(uuid.uuid4()),
-                        embedding,
-                        {"text": chunk}
-                    )
-                )
+                vectors.append((
+                    str(uuid.uuid4()),
+                    embedding,
+                    {"text": chunk}
+                ))
 
         if vectors:
             index.upsert(vectors=vectors)
@@ -133,7 +121,6 @@ async def upload_pdf(file: UploadFile = File(...)):
         print("UPLOAD ERROR:", e)
         return {"error": str(e)}
 
-
 # ---------------- CHAT ----------------
 @app.post("/chat")
 def chat(data: ChatRequest):
@@ -145,7 +132,7 @@ def chat(data: ChatRequest):
 
         results = index.query(
             vector=query_embedding,
-            top_k=5,
+            top_k=10,
             include_metadata=True
         )
 
@@ -154,18 +141,29 @@ def chat(data: ChatRequest):
         if not matches:
             return {"answer": "No relevant data found."}
 
+        summary_keywords = ["summary", "summarize", "explain", "overview", "describe"]
+
+        is_summary_question = any(
+            k in data.question.lower() for k in summary_keywords
+        )
+
+        if not is_summary_question:
+            matches = [m for m in matches if m.get("score", 0) > 0.35]
+
+        if not matches:
+            return {"answer": "Answer not found in document."}
+
         context = "\n\n".join(
-            match["metadata"]["text"] for match in matches
+            m["metadata"]["text"] for m in matches
         )
 
         prompt = f"""
-You are a document Q&A assistant.
+You are an AI document assistant.
 
 RULES:
-- Answer ONLY from context
-- If answer exists, give direct answer
-- If not found say: "Answer not found in document"
+- Use ONLY context
 - Do not hallucinate
+- Be direct
 
 CONTEXT:
 {context}
@@ -178,9 +176,7 @@ ANSWER:
 
         response = groq_client.chat.completions.create(
             model="llama-3.3-70b-versatile",
-            messages=[
-                {"role": "user", "content": prompt}
-            ],
+            messages=[{"role": "user", "content": prompt}],
             temperature=0.2
         )
 
