@@ -3,7 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from pypdf import PdfReader
 from pinecone import Pinecone
-from google import genai
+import google.generativeai as genai
 from groq import Groq
 from dotenv import load_dotenv
 
@@ -29,23 +29,16 @@ GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
 PINECONE_API_KEY = os.getenv("PINECONE_API_KEY")
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 
-# ---------------- SAFETY CHECKS ----------------
-if not GOOGLE_API_KEY:
-    raise ValueError("GOOGLE_API_KEY is missing")
+if not GOOGLE_API_KEY or not PINECONE_API_KEY or not GROQ_API_KEY:
+    raise ValueError("Missing API keys in environment variables")
 
-if not PINECONE_API_KEY:
-    raise ValueError("PINECONE_API_KEY is missing")
-
-if not GROQ_API_KEY:
-    raise ValueError("GROQ_API_KEY is missing")
+# ---------------- INIT GOOGLE ----------------
+genai.configure(api_key=GOOGLE_API_KEY)
 
 # ---------------- CLIENTS ----------------
-client = genai.Client(api_key=GOOGLE_API_KEY)
-
 groq_client = Groq(api_key=GROQ_API_KEY)
 
 pc = Pinecone(api_key=PINECONE_API_KEY)
-
 index = pc.Index("document-chatbot")
 
 # ---------------- REQUEST MODEL ----------------
@@ -56,11 +49,11 @@ class ChatRequest(BaseModel):
 # ---------------- EMBEDDING ----------------
 def get_embedding(text: str):
     try:
-        result = client.models.embed_content(
-            model="gemini-embedding-001",
-            contents=text
+        result = genai.embed_content(
+            model="models/embedding-001",
+            content=text
         )
-        return result.embeddings[0].values
+        return result["embedding"]
 
     except Exception as e:
         print("EMBEDDING ERROR:", e)
@@ -164,18 +157,19 @@ def chat(data: ChatRequest):
         prompt = f"""
 You are a document Q&A assistant.
 
-Rules:
+RULES:
 - Answer ONLY from context
 - If answer exists, give direct answer
 - If not found say: "Answer not found in document"
+- Do not hallucinate
 
-Context:
+CONTEXT:
 {context}
 
-Question:
+QUESTION:
 {data.question}
 
-Answer:
+ANSWER:
 """
 
         response = groq_client.chat.completions.create(
