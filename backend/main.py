@@ -3,26 +3,15 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from pypdf import PdfReader
 from pinecone import Pinecone
-import google.generativeai as genai
+from google import genai
 from groq import Groq
 from dotenv import load_dotenv
+
 import os
 import uuid
 
 # ---------------- LOAD ENV ----------------
 load_dotenv()
-
-GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
-PINECONE_API_KEY = os.getenv("PINECONE_API_KEY")
-GROQ_API_KEY = os.getenv("GROQ_API_KEY")
-
-# ---------------- CONFIG ----------------
-genai.configure(api_key=GOOGLE_API_KEY)
-
-groq_client = Groq(api_key=GROQ_API_KEY)
-
-pc = Pinecone(api_key=PINECONE_API_KEY)
-index = pc.Index("document-chatbot")
 
 # ---------------- APP ----------------
 app = FastAPI()
@@ -35,23 +24,50 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# ---------------- MODEL ----------------
+# ---------------- API KEYS ----------------
+GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
+PINECONE_API_KEY = os.getenv("PINECONE_API_KEY")
+GROQ_API_KEY = os.getenv("GROQ_API_KEY")
+
+# ---------------- SAFETY CHECKS ----------------
+if not GOOGLE_API_KEY:
+    raise ValueError("GOOGLE_API_KEY is missing")
+
+if not PINECONE_API_KEY:
+    raise ValueError("PINECONE_API_KEY is missing")
+
+if not GROQ_API_KEY:
+    raise ValueError("GROQ_API_KEY is missing")
+
+# ---------------- CLIENTS ----------------
+client = genai.Client(api_key=GOOGLE_API_KEY)
+
+groq_client = Groq(api_key=GROQ_API_KEY)
+
+pc = Pinecone(api_key=PINECONE_API_KEY)
+
+index = pc.Index("document-chatbot")
+
+# ---------------- REQUEST MODEL ----------------
 class ChatRequest(BaseModel):
     question: str
+
 
 # ---------------- EMBEDDING ----------------
 def get_embedding(text: str):
     try:
-        result = genai.embed_content(
-            model="models/embedding-001",
-            content=text
+        result = client.models.embed_content(
+            model="gemini-embedding-001",
+            contents=text
         )
-        return result["embedding"]
+        return result.embeddings[0].values
+
     except Exception as e:
         print("EMBEDDING ERROR:", e)
         return None
 
-# ---------------- SPLIT TEXT ----------------
+
+# ---------------- TEXT SPLITTING ----------------
 def split_text(text, chunk_size=800, overlap=150):
     chunks = []
     start = 0
@@ -63,15 +79,16 @@ def split_text(text, chunk_size=800, overlap=150):
 
     return chunks
 
+
 # ---------------- HOME ----------------
 @app.get("/")
 def home():
     return {"message": "Backend Running"}
 
-# ---------------- UPLOAD ----------------
+
+# ---------------- PDF UPLOAD ----------------
 @app.post("/upload")
 async def upload_pdf(file: UploadFile = File(...)):
-
     try:
         os.makedirs("uploads", exist_ok=True)
 
@@ -89,7 +106,7 @@ async def upload_pdf(file: UploadFile = File(...)):
                 text += page_text + "\n"
 
         if not text.strip():
-            return {"error": "No readable text found"}
+            return {"error": "No readable text found in PDF"}
 
         chunks = split_text(text)
 
@@ -116,12 +133,13 @@ async def upload_pdf(file: UploadFile = File(...)):
         }
 
     except Exception as e:
+        print("UPLOAD ERROR:", e)
         return {"error": str(e)}
+
 
 # ---------------- CHAT ----------------
 @app.post("/chat")
 def chat(data: ChatRequest):
-
     try:
         query_embedding = get_embedding(data.question)
 
@@ -137,20 +155,19 @@ def chat(data: ChatRequest):
         matches = results.get("matches", [])
 
         if not matches:
-            return {"answer": "No relevant data found"}
+            return {"answer": "No relevant data found."}
 
         context = "\n\n".join(
-            match["metadata"]["text"]
-            for match in matches
+            match["metadata"]["text"] for match in matches
         )
 
         prompt = f"""
 You are a document Q&A assistant.
 
 Rules:
-- Answer ONLY using context
-- If not found, say "Answer not found in document"
-- Give short direct answers
+- Answer ONLY from context
+- If answer exists, give direct answer
+- If not found say: "Answer not found in document"
 
 Context:
 {context}
@@ -174,4 +191,5 @@ Answer:
         }
 
     except Exception as e:
+        print("CHAT ERROR:", e)
         return {"error": str(e)}
