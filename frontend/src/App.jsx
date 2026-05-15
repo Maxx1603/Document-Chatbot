@@ -24,7 +24,7 @@ function App() {
       setLoading(true);
 
       const response = await axios.post(
-        "http://127.0.0.1:8000/upload",
+        "https://document-chatbot-tjru.onrender.com/upload",
         formData,
         {
           headers: {
@@ -69,7 +69,7 @@ function App() {
       setAnswer("");
 
       const response = await axios.post(
-        "http://127.0.0.1:8000/chat",
+        "https://document-chatbot-tjru.onrender.com/chat",
         {
           question: question
         }
